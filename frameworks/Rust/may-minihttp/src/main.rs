@@ -107,28 +107,32 @@ impl HttpService for Techempower {
 }
 
 fn main() {
-    // may::config().set_io_workers(num_cpus::get());
     may::config()
         .set_io_workers(num_cpus::get())
         .set_workers(num_cpus::get());
-
-    let (db_tx, db_rx) = mpmc::channel();
 
     let dbhost = match option_env!("DBHOST") {
         Some(it) => it,
         _ => "localhost",
     };
+
     let db_url = format!(
         "postgres://benchmarkdbuser:benchmarkdbpass@{}/hello_world",
         dbhost
     );
-    join!(for _ in 0..(num_cpus::get() * 4) {
-        let conn = Connection::connect(db_url.as_str(), TlsMode::None).unwrap();
-        db_tx.send(conn).unwrap();
+
+    // create the connection pool
+    let (db_tx, db_rx) = mpmc::channel();
+    may::coroutine::scope(|s| {
+        for _ in 0..(num_cpus::get() * 4) {
+            go!(s, || {
+                let conn = Connection::connect(db_url.as_str(), TlsMode::None).unwrap();
+                db_tx.send(conn).unwrap();
+            });
+        }
     });
 
-    let server = HttpServer(Techempower { db_rx, db_tx })
-        .start("0.0.0.0:8080")
-        .unwrap();
-    server.join().unwrap();
+    let techempower = Techempower { db_rx, db_tx };
+    let server = HttpServer(techempower).start("0.0.0.0:8080").unwrap();
+    server.wait();
 }
