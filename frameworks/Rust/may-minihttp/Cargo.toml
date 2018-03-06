@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Xudong Huang <huangxu008@hotmail.com>"]
 
 [dependencies]
+url = "1.7"
 rand = "0.4"
 serde = "1.0"
 num_cpus = "1.0"

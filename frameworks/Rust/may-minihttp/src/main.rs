@@ -8,10 +8,13 @@ extern crate rand;
 extern crate serde_derive;
 #[macro_use]
 extern crate serde_json;
+extern crate url;
 
 use std::io;
+use std::cmp;
 use std::ops::Deref;
 
+use url::Url;
 use rand::Rng;
 use postgres::{Connection, TlsMode};
 use may::sync::mpmc::{self, Receiver, Sender};
@@ -75,6 +78,41 @@ impl Techempower {
             randomnumber: row.get(1),
         })
     }
+
+    fn queries(&self, req: &Request) -> io::Result<Vec<WorldRow>> {
+        let url = format!("http://localhost{}", req.path());
+        let url = Url::parse(&url).unwrap();
+        let queries = url.query_pairs()
+            .find(|pair| pair.0 == "q")
+            .and_then(|(_, value)| value.parse::<u32>().ok())
+            .unwrap_or(1);
+        let queries = cmp::max(1, queries);
+        let queries = cmp::min(500, queries) as usize;
+
+        let conn = self.get_conn();
+        let random_world = conn.prepare_cached(
+            "SELECT id,randomNumber \
+             FROM World WHERE id = $1",
+        )?;
+
+        let mut worlds = Vec::with_capacity(queries);
+        let mut randoms = Vec::with_capacity(queries);
+        let mut rng = rand::thread_rng();
+        for _ in 0..queries {
+            randoms.push(rng.gen_range(1, 10_000));
+        }
+        for i in 0..queries {
+            let random_id = randoms[i];
+            let rows = &random_world.query(&[&random_id])?;
+            let row = rows.get(0);
+
+            worlds.push(WorldRow {
+                id: row.get(0),
+                randomnumber: row.get(1),
+            });
+        }
+        Ok(worlds)
+    }
 }
 
 impl HttpService for Techempower {
@@ -84,9 +122,9 @@ impl HttpService for Techempower {
         // Bare-bones router
         match req.path() {
             "/json" => {
+                let msg = json!({"message": "Hello, World!"});
                 resp.header("Content-Type", "application/json");
-                *resp.body_mut() =
-                    serde_json::to_vec(&json!({"message": "Hello, World!"})).unwrap();
+                *resp.body_mut() = serde_json::to_vec(&msg).unwrap();
             }
             "/plaintext" => {
                 resp.header("Content-Type", "text/plain")
@@ -97,8 +135,15 @@ impl HttpService for Techempower {
                 resp.header("Content-Type", "application/json");
                 *resp.body_mut() = serde_json::to_vec(&msg).unwrap();
             }
-            _ => {
-                resp.status_code(404, "Not Found");
+
+            p => {
+                if p.starts_with("/queries") {
+                    let msg = self.queries(&req).expect("failed to get queries");
+                    resp.header("Content-Type", "application/json");
+                    *resp.body_mut() = serde_json::to_vec(&msg).unwrap();
+                } else {
+                    resp.status_code(404, "Not Found");
+                }
             }
         }
 
